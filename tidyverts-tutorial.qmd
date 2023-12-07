@@ -1,0 +1,353 @@
+---
+title: "tidyverts tutorial"
+author: ""
+format: 
+  revealjs:
+    slide-number: true
+    smaller: true
+    incremental: true
+    scrollable: true
+editor: visual
+execute: 
+  echo: true
+---
+
+## 1. Intro: Tidyverts packages
+
+-   The tidyverts (<https://tidyverts.org/>) is a collection of packages created specifically to handle time series data
+
+::: fragment
+![](img/tidiverts_family.JPG){width="700"}
+:::
+
+##  {#slide3-id data-menu-title="Slide 3"}
+
+-   The `tidyverts` libraries are more closely integrated with the [tidyverse framework](https://www.tidyverse.org/)
+-   <https://otexts.com/fpp3/> (Rob Hyndman etc)
+
+::: fragment
+![](img/fpp3.JPG){fig-align="center"}
+:::
+
+##  {#slide4-id data-menu-title="Slide 4"}
+
+```{r}
+#| warning: false
+#| message: false
+
+## load relevant libraries
+
+## from tidyverse
+library(dplyr)    ## data wrangling
+library(stringr)  ## handling of strings
+library(readr)    ## r objects' import/export
+library(ggplot2)  ## r plotting
+
+## from tidyverts
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+
+## others
+library(statswalesr) ## import data from StatsWales
+
+options(scipen = 999) ## remove scientific notation
+```
+
+## 2. Data retrieval
+
+-   Time series health data retrieved from StatsWales
+
+-   Aggregated monthly attendances to Emergency Dept (ED), grouped by Local Health Boards (LHB):
+
+-   Table: ["Number of attendances in NHS Wales emergency departments by age band, sex and site"](https://statswales.gov.wales/Catalogue/Health-and-Social-Care/NHS-Hospital-Waiting-Times/emergency-department/emergencyattendances-by-age-sex-site).
+
+-   We can directly extract the whole dataset in R using the [`statswalesr` package](https://github.com/jamie-ralph/statswalesr), using the **Open Data** table code (**HLTH0037**)
+
+::: fragment
+![](img/StatsWales_Monthly_ED.JPG)
+:::
+
+::: fragment
+```{r}
+#| eval: false
+## download the raw table
+HLTH0037_data_raw <- statswalesr::statswales_get_dataset("HLTH0037")
+```
+:::
+
+```{r}
+#| eval: false
+#| echo: false
+
+## save data locally
+write.csv(HLTH0037_data_raw, "data/HLTH0037_data_raw.csv", row.names = F)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+## re-import data saved locally
+HLTH0037_data_raw <- read.csv("data/HLTH0037_data_raw.csv")
+```
+
+```{r}
+#| echo: false
+#| output-location: fragment
+#| eval: false
+head(HLTH0037_data_raw)
+```
+
+-   **....Data cleaning**
+
+    -   Converted date column into date format
+
+    -   Selection of relevant columns
+
+    -   Modified columns' names
+
+    -   Data cleaning code: `data_cleaning.R`
+
+-   ...Quick look at the cleaned dataset:
+
+::: fragment
+```{r}
+#| output-location: fragment
+
+## import cleaned data
+HLTH0037_data_cln <- readr::read_rds("data/HLTH0037_data_cln.rds")
+
+head(HLTH0037_data_cln)
+```
+:::
+
+## 3. Creation of a `tsibble` object
+
+::: fragment
+![](img/as_tsibble_fun.JPG)
+:::
+
+-   **`index`** = the **time index variable**
+
+    -   must be in a **date-type format**
+
+-   **`key`** = it allows **multiple time series** to be stored in a single object (one or more categorical columns to uniquely identify a time series)
+
+##  {#slide7-id data-menu-title="Slide 7"}
+
+-   Creation of `tsibble` object
+
+::: fragment
+```{r}
+#| output-location: fragment
+HLTH0037_data_ts <- tsibble::as_tsibble(
+  ## x = data
+  x = HLTH0037_data_cln,
+  ## index = time column in the table
+  index = MonthYear, 
+  ## key = groups of different time series
+  key = LHB
+  )
+
+```
+:::
+
+::: fragment
+```{r}
+#| output-location: fragment
+HLTH0037_data_ts
+```
+:::
+
+## 4. Time series plotting
+
+Use function `fabletools::autoplot()`
+
+All Wales aggregated data
+
+::: fragment
+```{r fig.height=4 ,fig.width=7}
+#| output-location: fragment
+#| code-overflow: wrap
+
+## summarise records at All Wales level
+AllWales_ts <-
+  HLTH0037_data_ts |>
+  dplyr::summarise(Attendances = sum(Attendances))
+
+## plot the time series
+fabletools::autoplot(
+  object = AllWales_ts,
+  .vars = Attendances) +
+  ggplot2::labs(title = "All Wales ED Attendances")
+```
+:::
+
+##  {#slide9-id data-menu-title="Slide 9"}
+
+Time plots by group/key
+
+-   By Local Health Boards
+
+::: fragment
+```{r fig.height=4 ,fig.width=7}
+#| output-location: fragment
+## plot the time series
+fabletools::autoplot(
+  object = HLTH0037_data_ts,
+  .vars = Attendances)+
+  ggplot2::labs(title = "ED Attendances by Local Health Board") + 
+  theme(legend.position="bottom")
+```
+:::
+
+##  {#slide10-id data-menu-title="Slide 10"}
+
+**Standard seasonal plot**: `feasts::gg_season()`
+
+::: fragment
+```{r}
+#| output-location: fragment
+feasts::gg_season(data = AllWales_ts, y = Attendances, period = "year") +
+  labs(title = "All Wales ED Attendances - Seasonal plot")
+```
+:::
+
+## 5. Forecasting
+
+#### Create Training and Validation periods
+
+-   **Training set**: from July 2021 to July 2023 (2 years)
+-   **Validation set**: from August 2023 to October 2023 (3 months)
+
+::: fragment
+```{r}
+AllWales_ts <-
+  AllWales_ts |>
+  dplyr::mutate(
+    Type = dplyr::case_when(
+      
+      ## Define Training Period
+      MonthYear >= tsibble::yearmonth("2021-07-01") & 
+        MonthYear <= tsibble::yearmonth("2023-07-01") ~ "Training",
+      
+      ## Define Validation Period
+      MonthYear > tsibble::yearmonth("2023-07-01") ~ "Validation",
+      
+      ## Data points before Training
+      TRUE ~ "Pre-training"
+      
+    )
+  )
+```
+:::
+
+##  {#slide12-id data-menu-title="Slide 12"}
+
+#### Fit a model to the Training data
+
+-   The fable framework offers a range of popular [forecasting models](https://fable.tidyverts.org/reference/index.html), including:
+    -   **Benchmark models** (MEAN, NAIVE, SNAIVE)
+
+    -   **ARIMA**
+
+    -   **ETS (Exponential Smoothing)**
+
+    -   **Regression Models (TSLM)**
+
+    -   **Neural Networks**
+
+    -   ...
+-   Interface for external libraries: **Facebook Prophet** and **`tscount`** (for count time series)
+
+##  {#slide13-id data-menu-title="Slide 13"}
+
+-   Syntax: `fabletools::model(MODEL_NAME(y ~ predictors))`
+-   This creates a list of **mables** (= **model tables**)
+
+::: fragment
+```{r}
+#| output-location: fragment
+AllWales_benchmarks <-
+  
+  fabletools::model(
+    
+    ## select data only from the Training period to fit the models
+    .data =  AllWales_ts |> filter(Type == "Training"),
+    
+    ## fit benchmark models
+    mean_model = fable::MEAN(Attendances),
+    naive_model = fable::NAIVE(Attendances),
+    snaive_model = fable::SNAIVE(Attendances ~ lag("year"))
+  )
+
+AllWales_benchmarks
+```
+:::
+
+-   **Generate forecasts**
+
+    -   Use `fabletools::forecast(h = horizon)` to obtain a **fable** (= forecast table) object with point and distribution forecasts for each model in the mable
+
+::: fragment
+```{r}
+#| output-location: fragment
+AllWales_benchmarks_fct <-
+  fabletools::forecast(
+    object = AllWales_benchmarks,
+    h=3 ## h = horizon, 3 months
+    ) 
+
+AllWales_benchmarks_fct
+```
+:::
+
+##  {#slide14-id data-menu-title="Slide 14"}
+
+-   Plot all models' **point forecasts** with **prediction intervals**
+
+::: fragment
+```{r fig.height=4 ,fig.width=10}
+#| warning: false
+#| output-location: fragment
+
+## plot forecasts
+fabletools::autoplot(
+  object = AllWales_benchmarks_fct, 
+  level = c(80,95), # level = prediction intervals
+  size = 1, lty = 2) + 
+  
+  ## overlap actual data
+  autolayer(
+    AllWales_ts |> filter(Type %in% c("Training","Validation")),
+    .vars = Attendances) +
+  theme(legend.position="bottom") +
+  labs(title = "All Wales ED: forecasts benchmark models")+ 
+  facet_wrap(vars(.model), nrow = 3, scales = "free_y")
+```
+:::
+
+##  {#slide15-id data-menu-title="Slide 15"}
+
+**Measure of point forecast accuracy**
+
+::: fragment
+```{r}
+#| output-location: fragment
+fabletools::accuracy(
+    object = AllWales_benchmarks_fct, # the forecasts
+    data = AllWales_ts  # the actual data
+    )
+```
+:::
+
+## The End
+
+::: fragment
+![](img/final_meme.JPG)
+:::
+
+-   All code available on github <https://github.com/AuraFrizzati/WMC-Dec-2023-R-Tidyverts.git>
+
+-   **Thanks for the attention :) ...Any questions??**
