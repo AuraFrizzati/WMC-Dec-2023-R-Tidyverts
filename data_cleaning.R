@@ -21,8 +21,6 @@ library(tsibble)
 # [1] Re-import the data saved locally ------------------------------------
 
 HLTH0037_data_raw <- read.csv("data/HLTH0037_data_raw.csv")
-HLTH0037_metadata <- read.csv("data/HLTH0037_metadata.csv")
-#names(HLTH0037_data_raw)
 
 
 
